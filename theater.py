@@ -1,6 +1,15 @@
 from storage import VALID_TYPES, atomic_transaction, load_data
 
 
+class ShowType:
+    HUAJU = "话剧"
+    YINYUEJU = "音乐剧"
+    ERTONGJU = "儿童剧"
+    XIANGSHENG = "相声"
+    ZAJI = "杂技"
+    ALL = VALID_TYPES
+
+
 def _find_show(data, name, date=None):
     for show in data["shows"]:
         if show["name"] == name and (date is None or show["date"] == date):
@@ -8,17 +17,23 @@ def _find_show(data, name, date=None):
     return None
 
 
-def _sold_seats(show):
-    return sum(order["qty"] for order in show["orders"])
+def _ensure_sold_seats(show):
+    if "sold_seats" not in show:
+        show["sold_seats"] = sum(order["qty"] for order in show["orders"])
 
 
 def _remaining_seats(show):
-    return show["total_seats"] - _sold_seats(show)
+    _ensure_sold_seats(show)
+    return show["total_seats"] - show["sold_seats"]
+
+
+def _validate_show_type(show_type):
+    if show_type not in ShowType.ALL:
+        raise ValueError(f"无效的演出类型，必须是: {', '.join(ShowType.ALL)}")
 
 
 def add_show(name, date, time, show_type, total_seats):
-    if show_type not in VALID_TYPES:
-        raise ValueError(f"无效的演出类型，必须是: {', '.join(VALID_TYPES)}")
+    _validate_show_type(show_type)
     if total_seats <= 0:
         raise ValueError("总座位数必须大于0")
 
@@ -33,6 +48,7 @@ def add_show(name, date, time, show_type, total_seats):
             "time": time,
             "type": show_type,
             "total_seats": total_seats,
+            "sold_seats": 0,
             "orders": []
         })
         return f"已添加演出: {name} ({date} {time}) - {show_type}, 共{total_seats}座"
@@ -50,16 +66,20 @@ def sell_ticket(show_name, buyer, phone, qty, date=None):
         if not show:
             raise ValueError(f"未找到演出: {show_name}" + (f" ({date})" if date else ""))
 
-        remaining = _remaining_seats(show)
-        if qty > remaining:
-            raise ValueError(f"剩余座位不足，当前剩余 {remaining} 座")
+        _ensure_sold_seats(show)
+        remaining_before = _remaining_seats(show)
+        if remaining_before < qty:
+            raise ValueError(f"剩余座位不足，当前剩余 {remaining_before} 座")
 
+        show["sold_seats"] += qty
         show["orders"].append({
             "buyer": buyer,
             "phone": phone,
             "qty": qty
         })
-        return f"售票成功: {buyer} ({phone}) 购买了 {qty} 张票，剩余 {remaining - qty} 座"
+
+        remaining_after = _remaining_seats(show)
+        return f"售票成功: {buyer} ({phone}) 购买了 {qty} 张票，剩余 {remaining_after} 座"
 
     return _sell()
 
@@ -74,6 +94,7 @@ def refund_ticket(show_name, phone, qty, date=None):
         if not show:
             raise ValueError(f"未找到演出: {show_name}" + (f" ({date})" if date else ""))
 
+        _ensure_sold_seats(show)
         buyer_orders = [o for o in show["orders"] if o["phone"] == phone]
         buyer_total = sum(o["qty"] for o in buyer_orders)
         if qty > buyer_total:
@@ -91,6 +112,8 @@ def refund_ticket(show_name, phone, qty, date=None):
                     order["qty"] -= remaining_to_refund
                     remaining_to_refund = 0
 
+        show["sold_seats"] -= qty
+
         return f"退票成功: 退还 {qty} 张票，剩余 {_remaining_seats(show)} 座"
 
     return _refund()
@@ -102,29 +125,29 @@ def show_stats(show_name, date=None):
     if not show:
         raise ValueError(f"未找到演出: {show_name}" + (f" ({date})" if date else ""))
 
-    sold = _sold_seats(show)
-    remaining = _remaining_seats(show)
+    _ensure_sold_seats(show)
     return {
         "name": show["name"],
         "date": show["date"],
         "time": show["time"],
         "type": show["type"],
         "total_seats": show["total_seats"],
-        "sold_seats": sold,
-        "remaining_seats": remaining
+        "sold_seats": show["sold_seats"],
+        "remaining_seats": _remaining_seats(show)
     }
 
 
 def monthly_stats(month):
     data = load_data()
     stats = {}
-    for show_type in VALID_TYPES:
+    for show_type in ShowType.ALL:
         stats[show_type] = {"shows": 0, "tickets": 0}
 
     for show in data["shows"]:
         if show["date"].startswith(month):
+            _ensure_sold_seats(show)
             show_type = show["type"]
             stats[show_type]["shows"] += 1
-            stats[show_type]["tickets"] += _sold_seats(show)
+            stats[show_type]["tickets"] += show["sold_seats"]
 
     return stats
